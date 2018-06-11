@@ -1,0 +1,95 @@
+#!/usr/bin/env ruby
+
+require 'open3'
+require 'date'
+require 'pp'
+require 'optionparser'
+require 'shellwords'
+
+# Create now as a global so we can use it elsewhere
+$now = DateTime.now
+
+options = {}
+
+module BackupCleaner
+  class Backup
+    attr_accessor :backup_id, :created_at
+
+    def initialize(backup_id:, created_at:)
+      @backup_id = backup_id
+      @created_at = created_at
+    end
+
+    def expire?
+      # Backups older than 1 month are to be expired
+      @created_at <= $now << 1
+    end
+  end
+
+  class Fetcher
+    def self.run(app_name)
+      command = "heroku pg:backups --app #{Shellwords.escape(app_name)}"
+      stdout, _stderr, status = Open3.capture3(command)
+      exit(status.exitstatus) unless status == 0
+      return stdout
+    end
+  end
+
+  class Parser
+    TIMESTAMP_REGEX = /\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} \+\d{4}/
+
+    def self.run(raw_backups_input)
+      [].tap do |backups|
+        raw_backups_input.split("\n").select{ |l| l =~ /[ab]\d+/}.each do |line|
+          backup_id = line.scan(/[ab]\d+/).first
+          created_at = DateTime.parse(line.scan(TIMESTAMP_REGEX).first)
+          backups << Backup.new(backup_id: backup_id, created_at: created_at)
+        end
+      end
+    end
+  end
+
+  class Purger
+    def self.run(parsed_backups, app_name)
+      to_purge =  parsed_backups.select(&:expire?)
+      to_purge.each do |backup|
+        command = "heroku pg:backups:delete #{backup.backup_id} --app #{Shellwords.escape(app_name)} --confirm #{Shellwords.escape(app_name)}"
+        stdout, _stderr, status = Open3.capture3(command)
+        unless status == 0
+          puts _stderr
+          exit(status.exitstatus)
+        end
+        puts stdout, _stderr
+        sleep 1
+      end
+    end
+  end
+
+  def self.go!(options)
+    check_for_heroku_cli
+    unless options[:app_name]
+      puts "Must specify app name with --app"
+      exit(1)
+    end
+    raw_backups = Fetcher.run(options[:app_name])
+    parsed_backups = Parser.run(raw_backups)
+    Purger.run(parsed_backups, options[:app_name])
+  end
+
+  def self.check_for_heroku_cli
+    _stdout, status = Open3.capture2("which heroku")
+    unless status == 0
+      puts "Heroku CLI not found: please install the Heroku CLI"
+      exit(status.exitstatus)
+    end
+  end
+end
+
+OptionParser.new do |opts|
+  opts.banner = "Description: Purges backups more than 30 days old\nUsage: heroku-backups-purger [options]"
+  opts.on("-a", "--app APP_NAME", String, "Name of the Heroku app to query backups for") do |app_name|
+    options[:app_name] = app_name
+  end
+end.parse!(ARGV)
+
+BackupCleaner.go!(options)
