@@ -28,7 +28,7 @@ module BackupCleaner
 
   class Fetcher
     def self.run(app_name)
-      command = "heroku pg:backups --app #{Shellwords.escape(app_name)}"
+      command = "heroku pg:backups --app #{app_name}"
       stdout, _stderr, status = Open3.capture3(command)
       exit(status.exitstatus) unless status == 0
       return stdout
@@ -53,7 +53,7 @@ module BackupCleaner
     def self.run(parsed_backups, app_name)
       to_purge =  parsed_backups.select(&:expire?)
       to_purge.each do |backup|
-        command = "heroku pg:backups:delete #{backup.backup_id} --app #{Shellwords.escape(app_name)} --confirm #{Shellwords.escape(app_name)}"
+        command = "heroku pg:backups:delete #{backup.backup_id} --app #{app_name} --confirm #{app_name}"
         stdout, _stderr, status = Open3.capture3(command)
         unless status == 0
           puts _stderr
@@ -88,7 +88,7 @@ end
 OptionParser.new do |opts|
   opts.banner = "Description: Purges backups more than 30 days old\nUsage: heroku-backups-purger [options]"
   opts.on("-a", "--app APP_NAME", String, "Name of the Heroku app to query backups for") do |app_name|
-    options[:app_name] = app_name
+    options[:app_name] = Shellwords.escape(app_name)
   end
 end.parse!(ARGV)
 
